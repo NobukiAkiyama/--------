@@ -1,0 +1,166 @@
+
+# === Identity Management Page ===
+# Insert this section in dashboard/app.py after Relationship Manager
+
+# elif page == "🔗 Identity Management":
+st.title("🔗 Identity Management")
+
+# Import required modules
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from src.core.identity_manager import IdentityManager
+from src.core.relationship_analyzer import RelationshipAnalyzer
+from src.llm.client import LLMClient
+import json
+
+# Initialize managers
+identity_manager = IdentityManager(db)
+llm = LLMClient()
+relationship_analyzer = RelationshipAnalyzer(db, llm)
+
+tab1, tab2, tab3 = st.tabs(["📋 All Identities", "🔗 Merge Requests", "🤖 Auto-tag Suggestions"])
+
+with tab1:
+    st.subheader("📋 All User Identities")
+    st.info("各ユーザーに紐付けられた全てのプラットフォームIDを表示")
+    
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users")
+        all_users = cursor.fetchall()
+    
+    if all_users:
+        for user in all_users:
+            identities = identity_manager.get_user_identities(user['id'])
+            
+            with st.expander(f"👤 {user['username']} ({len(identities)} identities)"):
+                if identities:
+                    for identity in identities:
+                        col1, col2, col3 = st.columns([2, 2, 1])
+                        with col1:
+                            st.write(f"**{identity['platform'].upper()}**")
+                        with col2:
+                            st.write(f"`{identity['platform_id']}`")
+                        with col3:
+                            if identity['verified']:
+                                st.success("✅ Verified")
+                            else:
+                                st.warning("⚠️ Unverified")
+                else:
+                    st.info("No platform identities registered")
+
+with tab2:
+    st.subheader("🔗 Identity Merge Requests")
+    st.info("AI検出または手動で作成された統合リクエストを承認/拒否")
+    
+    pending_requests = identity_manager.get_pending_merge_requests()
+    
+    if pending_requests:
+        for request in pending_requests:
+            with st.expander(
+                f"🔄 Merge {request['platform'].upper()}:{request['platform_id']} → {request['target_username']} (信頼度: {request['confidence_score']:.0%})"
+            ):
+                st.write(f"**Platform:** {request['platform']}")
+                st.write(f"**Platform ID:** `{request['platform_id']}`")
+                st.write(f"**Display Name:** {request['display_name']}")
+                st.write(f"**Target User:** {request['target_username']}")
+                st.write(f"**Confidence:** {request['confidence_score']:.1%}")
+                st.write(f"**Reason:** {request['reason']}")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button(f"✅ Approve", key=f"approve_{request['id']}"):
+                        if identity_manager.approve_merge_request(request['id']):
+                            st.success("✅ Identity merged!")
+                            st.rerun()
+                with col2:
+                    if st.button(f"❌ Reject", key=f"reject_{request['id']}"):
+                        if identity_manager.reject_merge_request(request['id']):
+                            st.warning("❌ Request rejected")
+                            st.rerun()
+    else:
+        st.success("✅ No pending merge requests")
+    
+    st.divider()
+    
+    # Auto-detect candidates
+    st.subheader("🔍 Auto-detect Similar Identities")
+    if st.button("🔄 Run Auto-detection"):
+        with st.spinner("Analyzing identities..."):
+            candidates = identity_manager.auto_detect_merge_candidates()
+            
+            if candidates:
+                st.write(f"Found {len(candidates)} potential matches:")
+                for candidate in candidates:
+                    id1 = candidate['identity1']
+                    id2 = candidate['identity2']
+                    st.info(f"**Match:** {id1['platform']}:{id1['display_name']} ≈ {id2['platform']}:{id2['display_name']}")
+                    st.write(f"Confidence: {candidate['confidence']:.0%} - {candidate['reason']}")
+                    
+                    if st.button(f"Create merge request", key=f"create_{id1['id']}_{id2['id']}"):
+                        # Create merge request from id1 to id2's user
+                        identity_manager.create_merge_request(
+                            id1['id'],
+                            id2['user_id'],
+                            candidate['confidence'],
+                            candidate['reason']
+                        )
+                        st.success("✅ Merge request created")
+                        st.rerun()
+            else:
+                st.success("✅ No similar identities found")
+
+with tab3:
+    st.subheader("🤖 Relationship Tag Auto-suggestions")
+    st.info("AIが会話ログを分析して関係性タグを提案します")
+    
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT user_id FROM memories WHERE user_id IS NOT NULL")
+        users_with_logs = cursor.fetchall()
+    
+    if users_with_logs:
+        for user_row in users_with_logs:
+            user_id = user_row['user_id']
+            
+            with db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT username, tags FROM users WHERE id = ?", (user_id,))
+                user = cursor.fetchone()
+            
+            if not user:
+                continue
+            
+            # Get current tags
+            try:
+                current_tags = json.loads(user['tags']) if user['tags'] else []
+            except:
+                current_tags = []
+            
+            with st.expander(f"👤 {user['username']} (Current: {', '.join(current_tags) if current_tags else 'No tags'})"):
+                if st.button(f"🤖 Analyze Relationship", key=f"analyze_{user_id}"):
+                    with st.spinner("Analyzing conversation logs..."):
+                        analysis = relationship_analyzer.analyze_relationship(user_id)
+                        
+                        if analysis['tags']:
+                            st.markdown(f"### 🎯 AI Suggestions (信頼度: {analysis['confidence']:.0%})")
+                            st.write(f"**Suggested Tags:** {', '.join(analysis['tags'])}")
+                            st.write(f"**Reason:** {analysis['reason']}")
+                            
+                            if st.button(f"✅ Accept Suggestions", key=f"accept_{user_id}"):
+                                # Merge with existing tags
+                                merged_tags = list(set(current_tags + analysis['tags']))
+                                with db.get_connection() as conn:
+                                    cursor = conn.cursor()
+                                    cursor.execute(
+                                        "UPDATE users SET tags = ? WHERE id = ?",
+                                        (json.dumps(merged_tags, ensure_ascii=False), user_id)
+                                    )
+                                    conn.commit()
+                                st.success(f"✅ Tags updated: {', '.join(merged_tags)}")
+                                st.rerun()
+                        else:
+                            st.warning(f"⚠️ No suggestions: {analysis['reason']}")
+    else:
+        st.info("No users with conversation history")
