@@ -18,7 +18,7 @@ DISCORD_BOT_TOKEN=your_bot_token_here
 ## Running the Bot
 
 ```powershell
-cd c:/Users/nobuk/Desktop/新しいフォルダー
+
 python -m src.adapter.discord_bot
 ```
 

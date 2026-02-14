@@ -29,7 +29,7 @@ class RitoAI:
             "see_screen": VisionAdapter(self.db_manager), 
             "post_image": ImagePostAdapter(),
             "local_chat": LocalChatAdapter(),
-            "goose_code": GooseAdapter(),
+            "goose_code": GooseAdapter(self.db_manager),
             "search_web": SearchAdapter(),
         }
         # In the future, we can systematically update all adapters to accept db_manager

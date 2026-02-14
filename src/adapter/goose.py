@@ -10,11 +10,14 @@ class GooseAdapter:
     Adapter for Square's Goose AI coding assistant.
     Executes Goose via subprocess for coding tasks only.
     """
-    def __init__(self):
+    def __init__(self, db_manager=None):
+        self.db = db_manager
         self.goose_exe = self._binary_search()
         self.goose_available = self.goose_exe is not None
         if not self.goose_available:
             print("[Goose] Warning: Goose CLI not found. Install via: pipx install goose-ai")
+            if self.db:
+                self.db.set_system_alert("Goose CLI not found in PATH or standard locations.", level="error")
     
     def _binary_search(self) -> Optional[str]:
         """Search for Goose binary in PATH and common locations"""
@@ -82,55 +85,108 @@ class GooseAdapter:
             subprocess.run(["git", "add", "."], cwd=temp_dir, capture_output=True)
             subprocess.run(["git", "commit", "-m", "baseline"], cwd=temp_dir, capture_output=True)
 
-            # 2. Execute Goose in the temp workspace
+        # 2. Execute Goose in the temp workspace
+        try:
+            # Create a temporary instruction file
+            instruction_file = os.path.join(temp_dir, "instructions.txt")
+            with open(instruction_file, "w", encoding="utf-8") as f:
+                f.write(task)
+            
+            cmd = [self.goose_exe, "run", "--instructions", "instructions.txt"]
+            print(f"[Goose] Generating proposal for task in {temp_dir}...")
+            
+            import threading
+            import time
+
+            # Start process with popen to allow interactive response & monitoring
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=temp_dir,
+                encoding='utf-8',
+                errors='replace',
+                bufsize=1
+                # shell=True # Should not be needed if using full path
+            )
+
+            all_output = []
+            
+            def monitor_stream(stream, name):
+                try:
+                    for line in iter(stream.readline, ''):
+                        if not line: break
+                        clean_line = line.strip()
+                        if clean_line:
+                            print(f"[Goose {name}] {clean_line}")
+                            all_output.append(line)
+                            
+                            # Resilience: Automatic y/n response
+                            # Detecting various prompt patterns
+                            prompt_triggers = ["(y/n)", "[y/n]", "sure?", "proceed?", "allow?", "overwrite?"]
+                            if any(trigger in clean_line.lower() for trigger in prompt_triggers):
+                                print(f"[Goose] Detected prompt! Auto-answering 'y'...")
+                                try:
+                                    process.stdin.write("y\n")
+                                    process.stdin.flush()
+                                except Exception as e:
+                                    print(f"[Goose] Failed to write to stdin: {e}")
+                except Exception as e:
+                    print(f"[Goose] Stream monitor error: {e}")
+
+            stdout_thread = threading.Thread(target=monitor_stream, args=(process.stdout, "OUT"), daemon=True)
+            stderr_thread = threading.Thread(target=monitor_stream, args=(process.stderr, "ERR"), daemon=True)
+            
+            stdout_thread.start()
+            stderr_thread.start()
+            
             try:
-                # Create a temporary instruction file
-                instruction_file = os.path.join(temp_dir, "instructions.txt")
-                with open(instruction_file, "w", encoding="utf-8") as f:
-                    f.write(task)
-                
-                cmd = [self.goose_exe, "run", "--instructions", "instructions.txt"]
-                print(f"[Goose] Generating proposal for task in {temp_dir}...")
-                
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=300,
-                    cwd=temp_dir,
-                    encoding='utf-8',
-                    errors='replace'
-                )
-                
-                if result.returncode != 0:
-                    return {"status": "failed", "error": f"Goose failed: {result.stderr}"}
-                
-                # 3. Capture the diff as the 'Proposal'
-                diff_res = subprocess.run(
-                    ["git", "diff", "HEAD"],
-                    capture_output=True,
-                    text=True,
-                    cwd=temp_dir
-                )
-                
-                proposal_diff = diff_res.stdout
-                
-                if not proposal_diff:
-                    return {
-                        "status": "success",
-                        "output": "No changes were proposed.",
-                        "proposal": None
-                    }
-                
+                # Wait with timeout (5 minutes)
+                rc = process.wait(timeout=300)
+            except subprocess.TimeoutExpired:
+                print("[Goose] Timeout reached! Sending alert...")
+                if self.db:
+                    self.db.set_system_alert("Goose process timed out during code generation. Manual check recommended.", level="error")
+                process.kill()
+                return {"status": "timeout", "error": "Goose timed out (300s)."}
+            
+            stdout_thread.join(timeout=5)
+            stderr_thread.join(timeout=5)
+            
+            if rc != 0:
+                last_logs = "".join(all_output[-15:])
+                if self.db:
+                    self.db.set_system_alert(f"Goose failed (RC {rc}). Task might be incomplete.", level="error")
+                return {"status": "failed", "error": f"Goose failed (RC {rc}).\nLast logs:\n{last_logs}"}
+            
+            # 3. Capture the diff as the 'Proposal'
+            diff_res = subprocess.run(
+                ["git", "diff", "HEAD"],
+                capture_output=True,
+                text=True,
+                cwd=temp_dir
+            )
+            
+            proposal_diff = diff_res.stdout
+            
+            if not proposal_diff:
                 return {
                     "status": "success",
-                    "output": result.stdout,
-                    "proposal": proposal_diff,
-                    "rationale": "Generated via Goose technical analysis."
+                    "output": "No changes were proposed.",
+                    "proposal": None
                 }
+            
+            return {
+                "status": "success",
+                "output": "".join(all_output),
+                "proposal": proposal_diff,
+                "rationale": "Generated via Goose technical analysis with automatic resilience handling."
+            }
                 
-            except Exception as e:
-                return {"status": "error", "error": str(e)}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
     
     def execute_simple(self, task: str, workspace: Optional[str] = None) -> str:
         """

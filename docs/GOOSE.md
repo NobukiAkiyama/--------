@@ -29,7 +29,7 @@ The AI can automatically invoke Goose for coding tasks:
   "tool": "goose_code",
   "params": {
     "task": "Create a Python function that calculates fibonacci numbers",
-    "workspace": "c:/Users/nobuk/Desktop/新しいフォルダー",
+    "workspace": "",
     "files": ["src/utils.py"]
   }
 }

@@ -47,6 +47,23 @@ if st.session_state.error_message:
         st.session_state.error_message = None
         st.rerun()
 
+# --- System Alerts (from DB) ---
+alert = db.get_system_alert()
+if alert:
+    msg = alert.get("message", "Unknown alert")
+    level = alert.get("level", "warning")
+    ts = alert.get("timestamp", 0)
+    dt = datetime.fromtimestamp(ts).strftime('%H:%M:%S')
+    
+    if level == "error":
+        st.error(f"🚨 **SYSTEM ALERT** [{dt}]: {msg}")
+    else:
+        st.warning(f"⚠️ **SYSTEM ALERT** [{dt}]: {msg}")
+    
+    if st.button("Dismiss Alert", key="dismiss_system_alert"):
+        db.clear_system_alert()
+        st.rerun()
+
 # === Dashboard ===
 if page == "📊 Dashboard":
     st.title("📊 System Dashboard")

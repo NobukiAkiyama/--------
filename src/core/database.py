@@ -305,3 +305,20 @@ class DatabaseManager:
             conn.commit()
             print(f"[DB] Config '{key}' updated. Mode: {str_value}. Reason: {reason}")
 
+    def set_system_alert(self, message: str, level: str = "warning"):
+        """Sets a system-wide alert for the dashboard."""
+        alert_data = {
+            "message": message,
+            "level": level,
+            "timestamp": time.time()
+        }
+        self.set_config("system_alert", alert_data, reason="System alert triggered")
+
+    def clear_system_alert(self):
+        """Clears the current system alert."""
+        self.set_config("system_alert", None, reason="System alert cleared")
+
+    def get_system_alert(self) -> Optional[Dict[str, Any]]:
+        """Retrieves the current active system alert."""
+        return self.get_config("system_alert")
+
